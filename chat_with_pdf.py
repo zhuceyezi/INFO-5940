@@ -8,6 +8,7 @@ from pdf2image import convert_from_path
 st.title("📝 File Q&A with OpenAI")
 
 # TODO: Chunk the file content into smaller parts if it is too large
+# TODO: Implement actual retrieval mechanism
 uploaded_files = st.file_uploader("Upload an article", type=("txt","pdf"), accept_multiple_files=True)
 
 question = st.chat_input(
