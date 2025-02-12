@@ -10,19 +10,31 @@ from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.memory import ConversationBufferMemory
-from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_community.chat_message_histories import (
+    StreamlitChatMessageHistory,
+)
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_openai import ChatOpenAI
+
+# Initialize OpenAI API Key
+OPENAI_API_KEY = environ.get("OPENAI_API_KEY")
 
 # Streamlit UI Setup
 st.title("📝 File Q&A with OpenAI (RAG-powered)")
 
-# File Uploader
+
+msgs = StreamlitChatMessageHistory(key="chat_messages")
+if len(msgs.messages) == 0:
+    msgs.add_ai_message("How can I help you?")
+    
 uploaded_files = st.file_uploader(
     "Upload one or more articles (.txt, .pdf)", 
     type=("txt", "pdf"), 
     accept_multiple_files=True
 )
-
-question = st.chat_input("Ask something about the uploaded files", disabled=not uploaded_files)
+    
+model = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="openai.gpt-4o")
 
 # Function to Extract Text from PDF (OCR Fallback)
 def extract_text_smart(pdf_file):
@@ -54,7 +66,7 @@ def process_files(files):
             file_text = extract_text_smart(uploaded_file)
 
         document = Document(
-            page_content=f"Document Name: {uploaded_file.name}\n{file_text}",
+            page_content=f"Document Name:{uploaded_file.name}\n{file_text}",
             metadata={"source": uploaded_file.name}
         )
         documents.append(document)
@@ -64,28 +76,23 @@ def process_files(files):
 def format_docs_with_sources(docs):
     """Format retrieved docs to include their source metadata."""
     return "\n\n".join(
-        f"📄 **Source: {doc.metadata['source']}**\n{doc.page_content}" for doc in docs
+        f"**Source: {doc.metadata['source']}**\n{doc.page_content}" for doc in docs
     )
-
-# Initialize OpenAI API Key
-OPENAI_API_KEY = environ.get("OPENAI_API_KEY")
 
 # Session state setup
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
-if "chat_messages" not in st.session_state:
-    st.session_state.chat_messages = StreamlitChatMessageHistory(key="chat_messages")
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []  # Store messages as `HumanMessage` and `AIMessage`
 
 if "memory" not in st.session_state:
-    st.session_state.memory = ConversationBufferMemory(
-        memory_key="chat_history", return_messages=True
-    )
+    st.session_state.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-# Process uploaded files and create vector store
 if uploaded_files:
     documents = process_files(uploaded_files)
 
+    # print(len(uploaded_files))
     # Split text into chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2500, chunk_overlap=250)
     chunked_docs = text_splitter.split_documents(documents)
@@ -98,45 +105,30 @@ if uploaded_files:
 
     st.success(f"✅ Processed {len(uploaded_files)} file(s). You can now ask questions!")
 
-# Display previous chat history
-for msg in st.session_state.chat_messages.messages:
-    role = "user" if isinstance(msg, HumanMessage) else "assistant"
-    with st.chat_message(role):
-        st.markdown(msg.content)
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", "You are an AI chatbot having a conversation with a human."),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{question}"),
+    ]
+)
 
-# Handling User Question
-if question and st.session_state.vector_store:
-    retriever = st.session_state.vector_store.as_retriever()
+chain = prompt | model
 
-    # Retrieve top-k relevant documents
-    retrieved_docs = retriever.invoke(question)
-    formatted_docs = format_docs_with_sources(retrieved_docs)
+chain_with_history = RunnableWithMessageHistory(
+    chain,
+    lambda session_id: msgs,  # Always return the instance created earlier
+    input_messages_key="question",
+    history_messages_key="history",
+)
 
-    print(st.session_state.memory)
-    # LangChain Retrieval QA
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="openai.gpt-4o"),
-        chain_type="stuff",
-        retriever=retriever,
-        memory=st.session_state.memory
-    )
+for msg in msgs.messages:
+    st.chat_message(msg.type).write(msg.content)
 
-    full_query = f"Sources:\n\n{formatted_docs}\n\nUser Question: {question}"
+if prompt := st.chat_input("Ask something about the uploaded files"):
+    st.chat_message("human").write(prompt)
+    # As usual, new messages are added to StreamlitChatMessageHistory when the Chain is called.
+    config = {"configurable": {"session_id": "any"}}
+    response = chain_with_history.invoke({"question": prompt}, config)
+    st.chat_message("ai").write(response.content)
     
-    # Display & Save User Message
-    with st.chat_message("user"):
-        st.markdown(question)
-    st.session_state.chat_messages.add_user_message(question)  # ✅ Saves user message
-
-    print(st.session_state.chat_messages.messages)
-    # AI Response
-    with st.chat_message("assistant"):
-        response = qa_chain.invoke({"query": full_query, "chat_history": st.session_state.chat_messages})["result"]
-
-        retrieved_sources = set(doc.metadata["source"] for doc in retrieved_docs)
-        response += f"\n\n📌 **Sources:** {', '.join(retrieved_sources)}"
-        
-        st.markdown(response)
-
-    # Save AI Response
-    st.session_state.chat_messages.add_ai_message(response)  # ✅ Saves AI response

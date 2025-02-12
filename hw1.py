@@ -108,11 +108,11 @@ for msg in st.session_state.chat_messages.messages:
 if question and st.session_state.vector_store:
     retriever = st.session_state.vector_store.as_retriever()
 
-    # Retrieve top-k relevant documents
-    retrieved_docs = retriever.invoke(question)
-    formatted_docs = format_docs_with_sources(retrieved_docs)
+    # Retrieve relevant documents
+    # retrieved_docs = retriever.invoke(question)
+    # formatted_docs = format_docs_with_sources(retrieved_docs)
 
-    print(st.session_state.memory)
+    # print(st.session_state.memory)
     # LangChain Retrieval QA
     qa_chain = RetrievalQA.from_chain_type(
         llm=ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="openai.gpt-4o"),
@@ -121,22 +121,21 @@ if question and st.session_state.vector_store:
         memory=st.session_state.memory
     )
 
-    full_query = f"Sources:\n\n{formatted_docs}\n\nUser Question: {question}"
+    full_query = f"Previous Conversation:\n\n{st.session_state.chat_messages}\n\nUser Question: {question}"
+    print(full_query)
     
     # Display & Save User Message
     with st.chat_message("user"):
         st.markdown(question)
-    st.session_state.chat_messages.add_user_message(question)  # ✅ Saves user message
+    st.session_state.chat_messages.add_user_message(question)
 
-    print(st.session_state.chat_messages.messages)
+    # print(st.session_state.chat_messages.messages)
+    
     # AI Response
     with st.chat_message("assistant"):
         response = qa_chain.invoke({"query": full_query, "chat_history": st.session_state.chat_messages})["result"]
-
-        retrieved_sources = set(doc.metadata["source"] for doc in retrieved_docs)
-        response += f"\n\n📌 **Sources:** {', '.join(retrieved_sources)}"
         
         st.markdown(response)
 
     # Save AI Response
-    st.session_state.chat_messages.add_ai_message(response)  # ✅ Saves AI response
+    st.session_state.chat_messages.add_ai_message(response)
