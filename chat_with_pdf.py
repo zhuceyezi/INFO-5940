@@ -1,77 +1,120 @@
 import streamlit as st
-from openai import OpenAI
 from os import environ
 import pdfplumber
 import pytesseract
-from pdf2image import convert_from_path
+from pdf2image import convert_from_bytes
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
+from langchain.schema import Document
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain.memory import ConversationBufferMemory
 
-st.title("📝 File Q&A with OpenAI")
+# Streamlit UI Setup
+st.title("📝 File Q&A with OpenAI (RAG-powered)")
 
-# TODO: Chunk the file content into smaller parts if it is too large
-# TODO: Implement actual retrieval mechanism
-uploaded_files = st.file_uploader("Upload an article", type=("txt","pdf"), accept_multiple_files=True)
+uploaded_files = st.file_uploader(
+    "Upload one or more articles (.txt, .pdf)", 
+    type=("txt", "pdf"), 
+    accept_multiple_files=True
+)
 
 question = st.chat_input(
-    "Ask something about the article",
+    "Ask something about the uploaded files",
     disabled=not uploaded_files,
 )
 
-def extract_text_smart(pdf_file, file_name):
+# Function to Extract Text from PDF (OCR Fallback)
+def extract_text_smart(pdf_file):
     text_output = ""
-    
     with pdfplumber.open(pdf_file) as pdf:
         for i, page in enumerate(pdf.pages):
             page_text = page.extract_text()
 
             if page_text and page_text.strip():
-                text_output += f"Document:{file_name}\n{page_text}\n\n"
+                text_output += f"{page_text}\n\n"
             else:
-                # Convert the PDF page to an image
-                images = convert_from_path(pdf_file, first_page=i+1, last_page=i+1)
+                images = convert_from_bytes(pdf_file.getvalue(), first_page=i+1, last_page=i+1)
                 for img in images:
                     ocr_text = pytesseract.image_to_string(img)
-                    text_output += f"Document:{file_name}\n{ocr_text}\n\n"
+                    text_output += f"{ocr_text}\n\n"
     
     return text_output
 
-
-if "messages" not in st.session_state:
-    st.session_state["messages"] = [{"role": "assistant", "content": "Ask something about the article"}]
-
-for msg in st.session_state.messages:
-    st.chat_message(msg["role"]).write(msg["content"])
-
-if question and uploaded_files:
-    file_content = ""
+# Function to Process Uploaded Files
+def process_files(files):
+    documents = []
     
-    for uploaded_file in uploaded_files:
-        # Read the content of the uploaded file, for each type
+    for uploaded_file in files:
+        file_text = ""
+        
         if uploaded_file.type in ["text/plain", "text/markdown"]:
-            file_content += f"Document:{uploaded_file.name}\n{uploaded_file.read().decode('utf-8')}"
-            file_content += "\n\n"
+            file_text = uploaded_file.read().decode("utf-8")
         elif uploaded_file.type == "application/pdf":
-            file_content += extract_text_smart(uploaded_file, uploaded_file.name)
-            file_content += "\n\n"
-            
-    print(file_content)
-    client = OpenAI(api_key=environ['OPENAI_API_KEY'])
+            file_text = extract_text_smart(uploaded_file)
 
-    # Append the user's question to the messages
-    st.session_state.messages.append({"role": "user", "content": question})
-    st.chat_message("user").write(question)
-
-    with st.chat_message("assistant"):
-        stream = client.chat.completions.create(
-            model="openai.gpt-4o",  # Change this to a valid model name
-            messages=[
-                {"role": "system", "content": f"Here's the content of the file:\n\n{file_content}"},
-                *st.session_state.messages
-            ],
-            stream=True
+        document = Document(
+            page_content=f"Document Name:{uploaded_file.name}\n{file_text}",
+            metadata={"source": uploaded_file.name}
         )
-        response = st.write_stream(stream)
+        documents.append(document)
+    
+    return documents
 
+# Initialize OpenAI API Key
+OPENAI_API_KEY = environ.get("OPENAI_API_KEY")
 
-    # Append the assistant's response to the messages
-    st.session_state.messages.append({"role": "assistant", "content": response})
+# Session state setup
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []  # Store messages as `HumanMessage` and `AIMessage`
+
+if uploaded_files:
+    documents = process_files(uploaded_files)
+
+    # Split text into chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    chunked_docs = text_splitter.split_documents(documents)
+
+    # Create FAISS Vector Store
+    embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model="openai.text-embedding-3-large")
+    vector_store = FAISS.from_documents(chunked_docs, embeddings)
+
+    st.session_state.vector_store = vector_store
+    st.success(f"✅ Processed {len(uploaded_files)} file(s). You can now ask questions!")
+
+# Display previous chat history
+for msg in st.session_state.chat_history:
+    role = "user" if isinstance(msg, HumanMessage) else "assistant"
+    with st.chat_message(role):
+        st.markdown(msg.content)
+
+# Handling User Question
+if question and st.session_state.vector_store:
+    retriever = st.session_state.vector_store.as_retriever()
+
+    # LangChain Retrieval QA
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="openai.gpt-4o"),
+        chain_type="stuff",
+        retriever=retriever
+    )
+
+    # Append user message to structured history
+    user_msg = HumanMessage(content=question)
+    st.session_state.chat_history.append(user_msg)
+    
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    # AI Response
+    with st.chat_message("assistant"):
+        response = qa_chain.invoke({"query": question, "chat_history": st.session_state.chat_history})["result"]
+        st.markdown(response)
+
+    # Append assistant response to structured history
+    ai_msg = AIMessage(content=response)
+    st.session_state.chat_history.append(ai_msg)

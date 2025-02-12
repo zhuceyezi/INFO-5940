@@ -23,6 +23,8 @@ RUN apt-get update \
     ffmpeg \
     gcc \
     python3-dev \
+    poppler-utils \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean 
 
