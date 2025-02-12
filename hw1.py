@@ -6,12 +6,14 @@ from pdf2image import convert_from_bytes
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
+DEBUG = False
 # Streamlit UI Setup
 st.title("📝 File Q&A with OpenAI (RAG-powered)")
 
@@ -24,6 +26,10 @@ uploaded_files = st.file_uploader(
 
 question = st.chat_input("Ask something about the uploaded files", disabled=not uploaded_files)
 
+def debug_print(msg):
+    if DEBUG == True:
+        print(msg)
+        
 # Function to Extract Text from PDF (OCR Fallback)
 def extract_text_smart(pdf_file):
     text_output = ""
@@ -54,18 +60,12 @@ def process_files(files):
             file_text = extract_text_smart(uploaded_file)
 
         document = Document(
-            page_content=f"Document Name: {uploaded_file.name}\n{file_text}",
+            page_content=f"{file_text}",
             metadata={"source": uploaded_file.name}
         )
         documents.append(document)
     
     return documents
-
-def format_docs_with_sources(docs):
-    """Format retrieved docs to include their source metadata."""
-    return "\n\n".join(
-        f"📄 **Source: {doc.metadata['source']}**\n{doc.page_content}" for doc in docs
-    )
 
 # Initialize OpenAI API Key
 OPENAI_API_KEY = environ.get("OPENAI_API_KEY")
@@ -77,19 +77,15 @@ if "vector_store" not in st.session_state:
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = StreamlitChatMessageHistory(key="chat_messages")
 
-if "memory" not in st.session_state:
-    st.session_state.memory = ConversationBufferMemory(
-        memory_key="chat_history", return_messages=True
-    )
-
 # Process uploaded files and create vector store
 if uploaded_files:
     documents = process_files(uploaded_files)
 
     # Split text into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2500, chunk_overlap=250)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunked_docs = text_splitter.split_documents(documents)
-
+    print("chunked_docs: ", len(chunked_docs))
+    
     # Create FAISS Vector Store
     embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model="openai.text-embedding-3-large")
     vector_store = FAISS.from_documents(chunked_docs, embeddings)
@@ -108,33 +104,57 @@ for msg in st.session_state.chat_messages.messages:
 if question and st.session_state.vector_store:
     retriever = st.session_state.vector_store.as_retriever()
 
+    template = """
+    You are an AI assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. 
+    If you don't know the answer, just say that you don't know. Use three sentences maximum and keep the answer concise.
+    Please also remember the information that the user told you.
+    
+    Context: {context} 
+    
+    Previous Conversation: {history}
+    
+    Question: {question} 
+    
+    Answer:
+    """
+    
+    prompt = PromptTemplate.from_template(template)
+    
+    final_prompt = {"context": RunnablePassthrough(), "question": RunnablePassthrough(), "history": RunnablePassthrough()} | prompt
     # Retrieve relevant documents
-    # retrieved_docs = retriever.invoke(question)
+    retrieved_docs = list(retriever.invoke(question))
+    print("retrieved_docs: ", retrieved_docs)
     # formatted_docs = format_docs_with_sources(retrieved_docs)
 
-    # print(st.session_state.memory)
-    # LangChain Retrieval QA
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="openai.gpt-4o"),
-        chain_type="stuff",
-        retriever=retriever,
-        memory=st.session_state.memory
+    client = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model="openai.gpt-4o")
+    
+    def format_docs(docs):
+        # Append the source to make it source-aware
+        return "\n\n".join(f"source:{doc.metadata.get('source')}\n{doc.page_content}" for doc in docs)
+    # debug_print(f"prompt: {final_prompt}")
+    debug_print(f"formatted_docs: {format_docs(retrieved_docs)}")
+    
+    
+    #Build the RAG chain
+    rag_chain = (
+        final_prompt
+        | client
+        | StrOutputParser()
     )
 
-    full_query = f"Previous Conversation:\n\n{st.session_state.chat_messages}\n\nUser Question: {question}"
-    print(full_query)
-    
     # Display & Save User Message
     with st.chat_message("user"):
         st.markdown(question)
     st.session_state.chat_messages.add_user_message(question)
-
-    # print(st.session_state.chat_messages.messages)
     
+    debug_print(f"history: {st.session_state.chat_messages}")
     # AI Response
     with st.chat_message("assistant"):
-        response = qa_chain.invoke({"query": full_query, "chat_history": st.session_state.chat_messages})["result"]
-        
+        response = rag_chain.invoke({
+            "question": question,
+            "context": format_docs(retrieved_docs),
+            "history": str(st.session_state.chat_messages)
+        })
         st.markdown(response)
 
     # Save AI Response
