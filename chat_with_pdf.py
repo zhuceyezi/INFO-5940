@@ -62,6 +62,13 @@ def process_files(files):
     
     return documents
 
+def format_docs_with_sources(docs):
+    """Format retrieved docs to include their source metadata."""
+    return "\n\n".join(
+        f"**Source: {doc.metadata['source']}**\n{doc.page_content}" for doc in docs
+    )
+
+
 # Initialize OpenAI API Key
 OPENAI_API_KEY = environ.get("OPENAI_API_KEY")
 
@@ -75,8 +82,9 @@ if "chat_history" not in st.session_state:
 if uploaded_files:
     documents = process_files(uploaded_files)
 
+    # print(len(uploaded_files))
     # Split text into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2500, chunk_overlap=250)
     chunked_docs = text_splitter.split_documents(documents)
 
     # Create FAISS Vector Store
@@ -84,6 +92,7 @@ if uploaded_files:
     vector_store = FAISS.from_documents(chunked_docs, embeddings)
 
     st.session_state.vector_store = vector_store
+
     st.success(f"✅ Processed {len(uploaded_files)} file(s). You can now ask questions!")
 
 # Display previous chat history
@@ -92,10 +101,14 @@ for msg in st.session_state.chat_history:
     with st.chat_message(role):
         st.markdown(msg.content)
 
+
 # Handling User Question
 if question and st.session_state.vector_store:
     retriever = st.session_state.vector_store.as_retriever()
 
+    # Retrieve top-k relevant documents
+    retrieved_docs = retriever.invoke(question)
+    formatted_docs = format_docs_with_sources(retrieved_docs)
     # LangChain Retrieval QA
     qa_chain = RetrievalQA.from_chain_type(
         llm=ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="openai.gpt-4o"),
@@ -103,6 +116,8 @@ if question and st.session_state.vector_store:
         retriever=retriever
     )
 
+    full_query = f"Sources:\n\n{formatted_docs}\n\nUser Question: {question}"
+     
     # Append user message to structured history
     user_msg = HumanMessage(content=question)
     st.session_state.chat_history.append(user_msg)
@@ -112,7 +127,11 @@ if question and st.session_state.vector_store:
 
     # AI Response
     with st.chat_message("assistant"):
-        response = qa_chain.invoke({"query": question, "chat_history": st.session_state.chat_history})["result"]
+        response = qa_chain.invoke({"query": full_query, "chat_history": st.session_state.chat_history})["result"]
+        
+        retrieved_sources = set(doc.metadata["source"] for doc in retrieved_docs)
+        response += f"\n\n**Sources:** {', '.join(retrieved_sources)}"
+        
         st.markdown(response)
 
     # Append assistant response to structured history
