@@ -102,7 +102,7 @@ for msg in st.session_state.chat_messages.messages:
 
 # Handling User Question
 if question and st.session_state.vector_store:
-    retriever = st.session_state.vector_store.as_retriever()
+    retriever = st.session_state.vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 1})
 
     template = """
     You are an AI assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. 
@@ -126,7 +126,7 @@ if question and st.session_state.vector_store:
     print("retrieved_docs: ", retrieved_docs)
     # formatted_docs = format_docs_with_sources(retrieved_docs)
 
-    client = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model="openai.gpt-4o")
+    client = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model="openai.gpt-4o", temperature=0.2)
     
     def format_docs(docs):
         # Append the source to make it source-aware
