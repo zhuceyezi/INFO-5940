@@ -1,5 +1,10 @@
 Note: place your .env file in the root folder, and run with "streamlit run hw1" 
 
+the .env file look like this:
+OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
+OPENAI_BASE_URL=https://api.ai.it.cornell.edu/
+TZ=America/New_York
+
 Modification: added installation of *poppler-utils* and *tesseract-ocr* using apt
 In pyproject.toml added:
 langchain-community = "^0.2.15"
