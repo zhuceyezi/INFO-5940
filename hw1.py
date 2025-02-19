@@ -82,7 +82,7 @@ if uploaded_files:
     documents = process_files(uploaded_files)
 
     # Split text into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
     chunked_docs = text_splitter.split_documents(documents)
     print("chunked_docs: ", len(chunked_docs))
     
