@@ -1,4 +1,4 @@
-Note: place your .env file in the root folder, and run with "streamlit run hw1" 
+Note: place your .env file in the root folder, and run with "streamlit run hw1.py" 
 
 the .env file look like this:
 OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
