@@ -24,6 +24,8 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
+
+
 question = st.chat_input("Ask something about the uploaded files", disabled=not uploaded_files)
 
 def debug_print(msg):
@@ -82,7 +84,7 @@ if uploaded_files:
     documents = process_files(uploaded_files)
 
     # Split text into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1024, chunk_overlap=100)
     chunked_docs = text_splitter.split_documents(documents)
     print("chunked_docs: ", len(chunked_docs))
     
@@ -102,7 +104,8 @@ for msg in st.session_state.chat_messages.messages:
 
 # Handling User Question
 if question and st.session_state.vector_store:
-    retriever = st.session_state.vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 1})
+    # retriever = st.session_state.vector_store.as_retriever()
+    retriever = st.session_state.vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
     template = """
     You are an AI assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. 
